@@ -14,6 +14,7 @@ open System.Net
 open System.Text.RegularExpressions
 open Newtonsoft.Json
 
+let rootPah = Environment.CurrentDirectory
 let podsFolder = "pods/" 
 let bindingsFolder = "bindings/"
 let packagesDirUnsorted = "packages-raw"
@@ -354,10 +355,13 @@ let generateCSharpBindingsForFramework pod podExpandedFolder =
 let generateCSharpBindingsForCustom pod =
     let podName = pod.name
     let bindingFolder = podBindingsFolder podName
+    let bindingFolderFullPath = Path.Combine(rootPah, bindingFolder);
     let safePodName = fileSafePodName podName
     let truePodName = podNameWithoutSubSpec podName
     let podXCodeDir = Path.Combine(podsFolder, safePodName, "XCode")
     let buildOutDir = Path.Combine(podXCodeDir,"build-out", "Debug-iphoneos", truePodName)
+    let scopPathDir = Path.Combine(rootPah, podXCodeDir, "Pods", "Headers", "Public", truePodName)
+    let scopPathHeader = Path.Combine(scopPathDir, @"*.h")
     let iosSdkInSharpie = @"""iphoneos""" 
     let headersFolder = buildOutDir
     let possibleUmbrellaHeader = Path.Combine(headersFolder, truePodName + ".h")
@@ -369,20 +373,26 @@ let generateCSharpBindingsForCustom pod =
                         let allHeadersString = String.Join(" ", allHeaderFiles)
                         allHeadersString
 
-    let podPrivate = "-I " + Path.Combine(podXCodeDir, "Pods", "Headers", "Private")
-    let podPublic = "-I" + Path.Combine(podXCodeDir, "Pods", "Headers", "Public")
+    let podPrivate = "-I" + Path.Combine(rootPah, podXCodeDir, "Pods", "Headers", "Private", truePodName)
+    let podPublic = "-I" + Path.Combine(rootPah, podXCodeDir, "Pods", "Headers", "Public", truePodName)
     let dependenciesHeaders = [podPrivate; podPublic] |> Seq.toArray
     let depHeadersOption = if dependenciesHeaders.Length > 0 then (" " + String.Join(" ", dependenciesHeaders)) else "" 
     let podNamespace = rootNamespace + safePodName
-    let sharpieArgs =  "bind -output " + bindingFolder + " -sdk "+ iosSdkInSharpie + " -scope " + headersFolder 
-                             + " " + mainHeader 
+    let sharpieArgs =  "bind -output " + bindingFolderFullPath + " -sdk "+ iosSdkInSharpie + " -scope "  + scopPathHeader 
                              + " -n " + podNamespace + " -c " +  depHeadersOption + " -v"
+
+    traceFAKE "BINDING!!: sharpie %s" sharpieArgs
+
+    let shellBridge = @"bridge.sh """ + sharpieArgs + @"""" 
+    //let result = execProcess (fun info ->  
+    //                            info.FileName <- "sharpie"
+    //                            info.Arguments <- sharpieArgs)
     let result = execProcess (fun info ->  
-                                info.FileName <- "sharpie"
-                                info.Arguments <- sharpieArgs)
+                                info.FileName <- "sh"
+                                info.Arguments <- shellBridge)
     if result <> 0 then failwithf "Error during sharpie %s " sharpieArgs
-    let apiDefinitionFile = Path.Combine(bindingFolder, "ApiDefinitions.cs")
-    let structsAndEnumsFile = Path.Combine(bindingFolder, "StructsAndEnums.cs")
+    let apiDefinitionFile = Path.Combine(bindingFolderFullPath, "ApiDefinitions.cs")
+    let structsAndEnumsFile = Path.Combine(bindingFolderFullPath, "StructsAndEnums.cs")
     if not <| File.Exists(structsAndEnumsFile) then File.WriteAllText(structsAndEnumsFile, "")
     fixShapieBugs structsAndEnumsFile apiDefinitionFile
 
@@ -574,11 +584,15 @@ let rec downloadPodsRecursive (podName:string) =
     
 let compileNonFrameworkProjectForArchitecure podName sim podXCodeDir buildOutDir =
     //see https://gist.github.com/madhikarma/09e553c508f870639570
+    let xprjFullPath = Path.Combine(rootPah, podXCodeDir, "EmptyProject.xcworkspace")
     let effectivePlatform = if sim then "iphonesimulator" else "iphoneos"
     let architectureArgs = if sim then @" -arch i386 -arch x86_64 -sdk ""iphonesimulator""" else @" -sdk ""iphoneos"""
-    let xcodeArgs = @"clean build -workspace EmptyProject.xcworkspace -scheme EmptyProject"
+    let xcodeArgs = @"clean build -workspace "
+                    + xprjFullPath
+                    + " -scheme EmptyProject"
                     + architectureArgs
                     + @" CODE_SIGN_IDENTITY="""" CODE_SIGNING_REQUIRED=NO"
+                    + " CODE_SIGNING_ALLOWED=NO"
                     + " ONLY_ACTIVE_ARCH=NO"
                     + " BUILD_DIR=" + buildOutDir 
     let result = execProcess (fun info ->  
@@ -787,7 +801,10 @@ Target "Bind" ( fun()->
 );
 
 Target "Test" ( fun()->
-    ()
+        let result = execProcess (fun info ->  
+                                    info.FileName <- "sharpie"
+                                    info.Arguments <- "pod -h")
+        if result <> 0 then failwith "Error during bind -h" 
 );
 
 // start build
